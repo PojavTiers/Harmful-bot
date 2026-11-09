@@ -15,9 +15,10 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN environment variable is not set!")
 
-# 1. FIX: Enable Message Content Intent
+# Enable all necessary intents
 intents = discord.Intents.default()
-intents.message_content = True  # This line is crucial for !locate to work
+intents.message_content = True
+intents.guilds = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
@@ -108,8 +109,9 @@ async def locate(ctx, user: discord.User):
     # 3. Set Avatar to the unique image
     try:
         await ctx.bot.user.edit(avatar=unique_img_data)
-        print(f"Avatar set to unique image with ID: {random_id}")
+        print(f"[{random_id}] Avatar set to unique image.")
     except Exception as e:
+        print(f"[{random_id}] Error setting avatar: {e}")
         await ctx.send(f"Error setting avatar: {e}")
         return
 
@@ -129,8 +131,13 @@ async def locate(ctx, user: discord.User):
     except discord.Forbidden:
         await ctx.send(f"Cannot DM {user.name}.")
         return
+    except Exception as e:
+        print(f"[{random_id}] Error sending DM: {e}")
+        await ctx.send(f"Error sending DM: {e}")
+        return
 
     # 5. Wait for the client to process the embed and fetch the image
+    print(f"[{random_id}] Waiting 15 seconds for target to view...")
     await asyncio.sleep(15)
 
     # 6. Probe for IP using the Discord CDN URL of the attachment
@@ -165,6 +172,7 @@ async def locate(ctx, user: discord.User):
             await ctx.send(f"❌ Failed to probe image. Status: {probe_resp.status_code}")
 
     except Exception as e:
+        print(f"[{random_id}] Error probing: {e}")
         await ctx.send(f"Error probing: {e}")
 
 async def update_bio_if_needed():
