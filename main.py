@@ -141,11 +141,17 @@ async def locate(ctx, user: discord.User):
     await asyncio.sleep(15)
 
     # 6. Probe for IP using the Discord CDN URL of the attachment
-    img_url = msg.attachments[0].url
-    
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
+    # FIX: Use refresh() and explicit checking to avoid "index out of range"
     try:
+        await msg.refresh()
+        if not msg.attachments:
+            await ctx.send(f"❌ No attachments found after refresh for {user.name}.")
+            return
+            
+        img_url = msg.attachments[0].url
+        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
         probe_resp = requests.get(img_url, headers=headers, timeout=10)
         
         cf_status = probe_resp.headers.get('cf-cache-status', 'Unknown')
